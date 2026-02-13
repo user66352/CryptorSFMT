@@ -118,7 +118,7 @@ bool argparse(int argc, char* argv[], Options *o)
 
     clipp::group cli = (
         clipp::option("-p").doc("password used for de-/encryption") & clipp::value("password", o->pw),
-        clipp::option("-k").doc("optional keyfile, min keyfile length is 2 byte, max length is 4992 byte, only the first 4992 byte of a keyfile will be used, those should be random bytes as well") & clipp::value("", o->keyfile),
+        clipp::option("-k").doc("optional keyfile, min keyfile length is 2 byte, max usable keyfile length is 54048 byte (depending on whether a password was used)") & clipp::value("", o->keyfile),
         clipp::option("-i").doc("input file, if omitted cryptorsfmt will read from stdin") & clipp::value("", o->infile),
         clipp::option("-o").doc("output file, if omitted cryptorsfmt will write to stdout") & clipp::value("", o->outfile),
         clipp::option("-m").doc("encryption mode, can be 1 or 2, if omitted defaults to mode 1, if mode was set to 2 for encryption it MUST be set also for decryption") & clipp::value("", o->mode),
