@@ -1,0 +1,129 @@
+﻿CryptorSFMT Description
+
+As the name suggests CryptorSFMT makes use of the enhanced Mersenne-Twister implementation SFMT in its latest version 1.5.1.
+Its's faster than the original Mersenne-Twister, it's supposed to produce higher quality pseudo-random numbers and it supports a longer periodicity.
+I have opted for the maximum periodicity of 2^216091-1 to get the maximum possible meaningful key-size.
+The general structure is the same as in my other project CryptorMT.
+Two generators are producing 2 initial ciphers which are than xor'ed to get the final stream cipher for encryption/decryption.
+
+*********************
+* Cipher Generation *
+*********************
+
+Two SFMT generator arrays are being created.
+Each generator will produce a stream of 3378 x 64bit unsigned integers at once.
+These 2 streams of random numbers are than xor'ed into the final stream cipher that is used in the encryption process.
+This way confidently recovering enough contiguous bytes originally created by the generators themselves should be very hard.
+
+*******************************
+* Seeding the SFMT generators *
+*******************************
+
+The system consists of 2 SFMT generators which can be seeded by an array of 32bit unsigned integers.
+With the chosen period length of 2^216091-1 a single SFMT state array is created as 1689 * 128 bit (27024 byte).
+Since the pseudo random stream of numbers repeats itself after 2^216091-1 generated numbers, the generator itself can be described as a very long ring buffer.
+In this scenario a seed becomes a pointer to a unique position within that ring buffer.
+To theoretically address them all CryptorSFMT uses a seed array of the size of the SFMT array itself.
+With SFMT_MEXP set to 216091 the seed array per SFMT has the size of SFMT_N32 (uint32_t[6756]) or 27024 byte.
+Since two generators are being used this creates 2 seed arrays with a total seed length of 54048 byte.
+There are currently 2 methods available to fill those seed arrays.
+
+Password:
+
+From the password a SHA512 hash is created and put into the first 64 byte of seed array 1.
+Than a 2nd SHA512 hash is generated from the 1st hash digest and written to the first 64 byte of seed array 2.
+So both SFMT's generation is somewhat dependent but not the same output.
+For encryption than a 128 byte salt is generated from the systems random generator.
+These random bytes are split into 2 blocks of 64 byte and each block is XOR'ed with the first 64 byte of each seed array.
+At this stage both seed array's are different and independent from each other.
+This process creates 2 seed array's with the first 64 byte independently initialized even with the same password.
+Now they are feed into the sfmt_init_by_array() function of SFMT 1 and 2.
+
+Key file:
+
+The key file is read and split into 2 arrays of bytes.
+Meaning the key file needs to consist of at least 2 byte (not useful, just using 2 to illustrate the algorithm).
+This would generate 2 pointers pointing at 1 byte each.
+Then byte 1 is written at the next free, not initiated, position of seed array 1 and byte 2 at the next free position at seed array 2.
+So basically the key file is split into 2 parts of equal length which are than appended to a seed array.
+With a password used the key file bytes are written starting at position 64 of each seed array, without a password at position 0.
+
+Only the amount of not initiated seed array bytes is used from the key file, beginning at the start of the file, and only an equal number.
+In case a key file has a length of 101 byte, only the first 100 would be considered for seeding.
+
+To illustrate that lets say a password was provided.
+It's hash occupies the first 64 byte + salt, remaining 26960 non initiated bytes per seed array.
+
+The algorithm would use the first 53920 byte from the key file to fill the remaining 26960 byte of each seed array.
+Without a password each part of the provided key file would be written right at the start at the seed file and than the random salt is added to the first 64 byte per seed array.
+That gives a maximum usable key file length of 54048 byte (if no password is used) which translates into an actual maximum usable key length of 432384 bit.
+
+Only key files with random bytes should be used (ideally).
+A salt is added regardless if a password was provided or not.
+So also the same key file generates a new cipher every time it is used.
+
+***********************
+* Modes of Encryption *
+***********************
+
+Mode 1) is the simplest and fasted.
+In this mode each byte of stream cipher is xor'ed with one byte of the input file.
+So the encrypted output is the xor product of stream cipher and plain text.
+
+Mode 2) is more complex and much more computational expensive.
+It is comprised of 4 steps per byte of plain text.
+
+First the plain text byte is replaced with a byte from a substitution box (sbox).
+A 32 bit key then is used to further obfuscate this replaced byte.
+For that the stream cipher is chopped into chunks of 32bit (6756 x 32bit chunks per block of generated stream cipher).
+
+1) The input byte is replaced with a byte from a randomized sbox.
+2) That byte than is xor'ed with byte position 0 from the related 32bit key.
+3) This xor product then is left or right rotated based on the parity of byte position 1 of the related 32bit key.
+   It is rotated by the amount of bits set to 1 at byte position 1 of the key.
+4) Last step is a multiplication with byte position 2 and 3 interpreted as 16bit uint and a final modulo 256 of that multiplication product.
+
+This is done for 6756 plain text characters at a time.
+The initial sbox is scrambled every 256 characters 4 times.
+
+********
+* sbox *
+********
+
+The sbox is an array of 256 characters in the range of 0 to 255.
+It is being scrambled at the beginning of encryption and then every 256 bytes of input.
+To scramble the sbox a stream cipher is generated which is being used as key.
+In a loop from i = 0 to 255 first an index is generated by getting a byte from that stream cipher and left-rotated by the amount of bits set to 1 in the following stream cipher byte.
+Now the byte at position i is replaced with the byte from the index created above.
+That is done in 4 rounds.
+So the sbox gets scrambled 4 times in a row every 256 bytes of plain text input.
+A plain text input byte is used as index of that sbox and replaced with sbox[input byte].
+
+*******************************
+* Obfuscation with 32 bit key *
+*******************************
+
+input  = 1 char (substitute from sbox)
+output = 1 char, result after obfuscation
+
+                    +-----------------------> 2.) output = XOR input character with byte pos 0 from 32 bit key
+                    |
+                    |     +-----------------> 3.) if pos 1 is even > right-rotate else left-rotate, rotate output by amount of bits set to 1 in pos 1
+                    |     |
+                    |     |     +-----+-----> 4.) output = (uint16[pos 2 and 3] + output from step 3) % 256
+                    |     |     |     |
+                 +-----+-----+-----+-----+
+uint32_t         |  0  |  1  |  2  |  3  |
+                 +-----+-----+-----+-----+
+
+
+Security and cost can be increased by lowering the amount of bytes before re-scrambling the sbox and how often that sbox gets scrambled in a row.
+Both values can be set in "global.h" before compiling.
+
+Current default values are:
+
+SBOX_SCRAMBLE_ROUNDS 4
+SBOX_SCRAMBLE_INTERVAL 256
+
+But increasing the rounds or decreasing the interval can significantly impact the encryption/decryption time.
+On the other hand a potential brute-force attack should also become significantly more expensive.
